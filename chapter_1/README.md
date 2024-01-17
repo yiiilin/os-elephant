@@ -37,3 +37,48 @@ make install
 ```
 
 最后`/opt/bochs/bin/bochs  --help`可打印bochs版本等信息
+
+## 配置bochs
+
+```shell
+cat > /opt/bochs/bochsrc.disk << EOF
+# 能够使用的内存大小，单位MB
+megs: 32
+
+# 设置真实机器的BIOS和VGA BIOS
+romimage: file=/opt/bochs/share/bochs/BIOS-bochs-latest
+vgaromimage: file=/opt/bochs/share/bochs/VGABIOS-lgpl-latest
+
+# 启动盘符
+boot: disk
+
+# 日志输出文件
+log: bochs.out
+
+# 关闭鼠标，打开键盘
+mouse: enabled=0
+keyboard_mapping: enable=1, map=/opt/bochs/share/bochs/keymaps/x11-pc-us.map
+
+# 硬盘设置
+ata0: enabled=1, ioaddr1=0x1f0, ioaddr2=0x3f0, irq=14
+
+# 打开gdb到1234端口，因为编译没打开，所以此处不打开
+# gdbstub: enabled=1, port=1234, text_base=0, data_base=0, bss_base=0
+EOF
+```
+
+## 运行bochs
+
+```shell
+cd /opt/bochs
+ln -s `pwd`/bin/bochs /usr/local/bin
+bin/bximage -hd -mode="flat" -size=60 -q hd60M.img
+# 会输出如下内容
+# The following line should appear in your bochsrc:
+# ata0-master: type=disk, path="hd60M.img", mode=flat, cylinders=121, heads=16, spt=63
+# 复制到bochsrc.disk
+echo "ata0-master: type=disk, path="hd60M.img", mode=flat, cylinders=121, heads=16, spt=63" >> bochsrc.disk
+
+# 随后启动bochs
+bochs -f bochsrc.disk
+```
