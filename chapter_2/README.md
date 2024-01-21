@@ -76,7 +76,8 @@ SECTION MBR vstart=0x7c00
     mov ah,3 ; 获取光标位置
     mov bh,0 ; 待获取光标的页号
 
-    int 0x10
+    int 0x10 ; 输出：ch=光标开始行，cl=光标结束行；dh=光标所在行号，dl=光标所在列号
+    ; 此处并没有设置光标位置，仅是获取光标位置
 
 ;打印字符串
     mov ax,message
