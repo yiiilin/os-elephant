@@ -1,5 +1,7 @@
 # 第二章
 
+[toc]
+
 ## BIOS
 
 BIOS，Base Input & Output System，基本输入输出系统
