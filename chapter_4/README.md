@@ -161,7 +161,7 @@ D/B字段，指示有效地址（段内偏移地址）及操作数的大小，�
 
 G 指定段界限的单位是1字节还是4KB，为1是4KB，为0是1字节
 
-### 全局描述符GDT、局部描述符LDT、选择子
+### 全局描述符GDT、局部描述符LDT、选择子 {#GDT_LDT_选择子}
 
 代码段要占用一个段描述符、数据段和栈段，每个内存段占用一个段描述符
 
@@ -240,6 +240,8 @@ mov cr0, eax
 
 最后是`include/boot.inc`需要更新，即配置信息需要更新
 
+内容可参考[全局描述符表](#全局描述符表)，以及[全局描述符GDT、局部描述符LDT、选择子](#GDT_LDT_选择子)
+
 `include/boot.inc`：
 
 ```S
@@ -248,7 +250,126 @@ LOADER_BASE_ADDR equ 0x900
 LOADER_START_SECTOR equ 0x2
 
 ; gdt描述符
-DESC_G_4K equ 1_000_0000_0000_0000_0000_0000b
+DESC_G_4K equ 1_000_0000_0000_0000_0000_0000b   ;段描述符的G位，为4K粒度
+DESC_D_32 equ 1_00_0000_0000_0000_0000_0000b    ;D/B位，表示32位操作数
+DESC_L equ 0_0_0000_0000_0000_0000_0000b        ;64位代码标记，标记为0
+DESC_AVL equ 0_0000_0000_0000_0000_0000b        ;留给操作系统用的，没有实际意义
+DESC_LIMIT_CODE2 equ 1111_0000_0000_0000_0000b  ;代码段段界限的第2部分
+DESC_LIMIT_DATA2 equ DESC_LIMIT_CODE2           ;数据段段界限的第2部分
+DESC_LIMIT_VIDEO2 equ 0000_0000_0000_0000_0000b ;？？？
+DESC_P equ 1000_0000_0000_0000b                 ;表示段存在
+DESC_DPL_0 equ 00_0_0000_0000_0000b             ;表示该断描述符对应的内存段特权级为0
+DESC_DPL_1 equ 01_0_0000_0000_0000b             ;表示该断描述符对应的内存段特权级为1
+DESC_DPL_2 equ 10_0_0000_0000_0000b             ;表示该断描述符对应的内存段特权级为2
+DESC_DPL_3 equ 11_0_0000_0000_0000b             ;表示该断描述符对应的内存段特权级为3
+DESC_S_CODE equ 1_0000_0000_0000b               ;代码段的S段，为1表示为普通段，不是系统段
+DESC_S_DATA equ DESC_S_CODE                     ;数据段的S段，为1表示为普通段，不是系统段
+DESC_S_SYS equ 0_0000_0000_0000b                ;表示该段为系统段
+DESC_TYPE_CODE equ 1000_0000_0000b              ;x=1,c=0,r=0,a=0 代码段可执行，非一致性，不可读，已访问位清零
+DESC_TYPE_DATA equ 0010_0000_0000b              ;x=1,e=0,w=1,a=0 数据段不可执行，向上扩展，可写，已访问位清零
+DESC_CODE_HIGH4 equ (0x00 << 24) + DESC_G_4K + DESC_D_32 + \
+    DESC_L + DESC_AVL+ DESC_LIMIT_CODE2 + \
+    DESC_P + DESC_DPL_0 + DESC_S_CODE + \
+    DESC_TYPE_CODE + 0x00                       ;定义了代码段的高4字节，(0x00<<24)表示“段基址24-31”字段
+DESC_DATA_HIGH4 equ (0x00 << 24) + DESC_G_4K + DESC_D_32 + \
+    DESC_L + DESC_AVL+ DESC_LIMIT_DATA2 + \
+    DESC_P + DESC_DPL_0 + DESC_S_DATA + \
+    DESC_TYPE_DATA + 0x00                       ;定义了数据段的高4字节，(0x00<<24)表示“段基址24-31”字段
+DESC_VIDEO_HIGH4 equ (0x00 << 24) + DESC_G_4K + DESC_D_32 + \
+    DESC_L + DESC_AVL+ DESC_LIMIT_VIDEO2 + \
+    DESC_P + DESC_DPL_0 + DESC_S_DATA + \
+    DESC_TYPE_DATA + 0x00                       ;？？？
+
+; 选择子属性
+RPL0 equ 00b
+RPL1 equ 01b
+RPL2 equ 10b
+RPL3 equ 11b
+TI_GDT equ 000b
+TI_LDT equ 100b
+
 ```
 
 `equ`是使用宏赋值
+
+`loader.S`：
+
+```S
+%include "boot.inc"
+section loader vstart=LOADER_BASE_ADDR
+LOADER_STACK_TOP equ LOADER_BASE_ADDR
+jmp loader_start
+
+;构建gdt及其内部描述符
+GDT_BASE:   dd 0x0000_0000
+            dd 0x0000_0000
+CODE_DESC:  dd 0x0000_FFFF
+            dd DESC_CODE_HIGH4
+DATA_STACK_DESC:    dd 0x0000_FFFF
+                    dd DESC_DATA_HIGH4
+VIDEO_DESC: dd 0x8000_0007  ;limit=(0xbffff-0xb8000)/4k=0x7
+            dd DESC_VIDEO_HIGH4 ;此时dpl（特权级）为0
+GDT_SIZE equ $ - GDT_BASE
+GDT_LIMIT equ GDT_SIZE - 1
+times 60 dq 0   ;预留60个描述符的空位
+SELECTOR_CODE equ (0x0001<<3) + TI_GDT + RPL0 ;相当于(CODE_DESC - GDT_BASE)/8 + TI_GDT + RPL0
+SELECTOR_DATA equ (0x0002<<3) + TI_GDT + RPL0 ;相当于(DATA_STACK_DESC - GDT_BASE)/8 + TI_GDT + RPL0，？？？
+SELECTOR_VIDEO equ (0x0003<<3) + TI_GDT + RPL0 ;相当于(VIDEO_DESC - GDT_BASE)/8 + TI_GDT + RPL0，？？？
+
+;gdt的指针，前两字节是gdt界限，后四个字节是gdt起始地址
+gdt_ptr dw GDT_LIMIT
+        dd GDT_BASE
+loadermsg db '2 loader in real.'
+
+;INT 0x10 功能号：0x06 目的：清屏
+;AH 功能号：0x06
+;AL 上卷行数
+;BH 上卷行属性
+;CL,CH 窗口左上角X,Y位置 ; 0, 0
+;DL,DH 窗口右下角X,Y位置 ; 4*16+15=79, 1*16+8=24；所以能容纳80*25个字符
+;无返回值
+loader_start:
+    mov sp, LOADER_BASE_ADDR
+    mov bp, loadermsg           ;ES:BP = 字符串地址
+    mov cx, 17                  ;CX = 字符串长度
+    mov ax, 0x1301              ;AG = 13H, AL = 01H
+    mov bx, 0x001f              ;页号为0（BH = 8）蓝底粉红字（BL = 1fH）
+    mov dx, 0x1800
+    int 0x10                    ;10h号中断
+
+; 进入保护模式
+;1 打开A20
+;2 加载GDT
+;3 将cr0的pe位置1
+
+    ; 打开A20
+    in al, 0x92
+    or al, 0000_0010B
+    out 0x92, al
+
+    ; 加载GDT
+    lgdt [gdt_ptr]
+
+    ; 将cr0的pe位置1
+    mov eax, cr0
+    or eax, 0x0000_0001
+    mov cr0, eax
+
+    jmp dword SELECTOR_CODE: p_mode_start   ;刷新流水线
+
+[bits 32]
+p_mode_start:
+    mov ax, SELECTOR_DATA
+    mov ds, ax
+    mov es, ax
+    mov ss, ax
+    mov esp; LOADER_STACK_TOP
+    mov ax, SELECTOR_VIDEO
+    mov gs, ax
+
+    mov byte [gs:160], 'P'
+
+    jmp $
+```
+
+......
