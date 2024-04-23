@@ -297,29 +297,31 @@ TI_LDT equ 100b
 ```S
 %include "boot.inc"
 section loader vstart=LOADER_BASE_ADDR
-LOADER_STACK_TOP equ LOADER_BASE_ADDR
-jmp loader_start
+LOADER_STACK_TOP equ LOADER_BASE_ADDR      ;保护模式下loader的栈
+jmp loader_start                           ;也可以在MBR直接跳到loader_start的位置，该jmp就可以不要了
 
 ;构建gdt及其内部描述符
-GDT_BASE:   dd 0x0000_0000
-            dd 0x0000_0000
-CODE_DESC:  dd 0x0000_FFFF
-            dd DESC_CODE_HIGH4
-DATA_STACK_DESC:    dd 0x0000_FFFF
+GDT_BASE:   dd 0x0000_0000                  ;dd是double-word，双字，4字节，
+            dd 0x0000_0000                  ;地址越来越高，第一个段描述符不可用，因此用0填充
+CODE_DESC:  dd 0x0000_FFFF                                      ;代码段描述符，低4字节，FFFF是段界限，0000是段基址
+            dd DESC_CODE_HIGH4                                  ;             高4字节
+DATA_STACK_DESC:    dd 0x0000_FFFF                              ;数据段和栈段描述符
                     dd DESC_DATA_HIGH4
-VIDEO_DESC: dd 0x8000_0007  ;limit=(0xbffff-0xb8000)/4k=0x7
+VIDEO_DESC: dd 0x8000_0007  ;段基址0x8000，颗粒度为4K，limit=(0xbffff-0xb8000)/4k=0x7，因此段界限位0x0007
+                            ;显示段描述符，0xb8000~0xbffff是用于文本模式显示适配器的内存地址
+                            ;内存地址0xc0000显示适配器BIOS所在区域
             dd DESC_VIDEO_HIGH4 ;此时dpl（特权级）为0
 GDT_SIZE equ $ - GDT_BASE
-GDT_LIMIT equ GDT_SIZE - 1
-times 60 dq 0   ;预留60个描述符的空位
-SELECTOR_CODE equ (0x0001<<3) + TI_GDT + RPL0 ;相当于(CODE_DESC - GDT_BASE)/8 + TI_GDT + RPL0
-SELECTOR_DATA equ (0x0002<<3) + TI_GDT + RPL0 ;相当于(DATA_STACK_DESC - GDT_BASE)/8 + TI_GDT + RPL0，？？？
-SELECTOR_VIDEO equ (0x0003<<3) + TI_GDT + RPL0 ;相当于(VIDEO_DESC - GDT_BASE)/8 + TI_GDT + RPL0，？？？
+GDT_LIMIT equ GDT_SIZE - 1  ;GDT段界限
+times 60 dq 0   ;预留60个描述符的空位，预留的60个段描述符位置，60*8字节
+SELECTOR_CODE equ (0x0001<<3) + TI_GDT + RPL0 ;相当于(CODE_DESC - GDT_BASE)/8 + TI_GDT + RPL0，代码段选择子
+SELECTOR_DATA equ (0x0002<<3) + TI_GDT + RPL0 ;相当于(DATA_STACK_DESC - GDT_BASE)/8 + TI_GDT + RPL0，数据段选择子，栈段选择子
+SELECTOR_VIDEO equ (0x0003<<3) + TI_GDT + RPL0 ;相当于(VIDEO_DESC - GDT_BASE)/8 + TI_GDT + RPL0，显示段选择子
 
-;gdt的指针，前两字节是gdt界限，后四个字节是gdt起始地址
+;gdt的指针，前两字节是gdt界限，后四个字节是gdt起始地址，lgdt命令用的
 gdt_ptr dw GDT_LIMIT
         dd GDT_BASE
-loadermsg db '2 loader in real.'
+loadermsg db '2 loader in real.'    ;还是实模式打印
 
 ;INT 0x10 功能号：0x06 目的：清屏
 ;AH 功能号：0x06
@@ -334,7 +336,7 @@ loader_start:
     mov cx, 17                  ;CX = 字符串长度
     mov ax, 0x1301              ;AG = 13H, AL = 01H
     mov bx, 0x001f              ;页号为0（BH = 8）蓝底粉红字（BL = 1fH）
-    mov dx, 0x1800
+    mov dx, 0x1800              ;dh行号，dl列号，即第25行，开头，文本模式共25行
     int 0x10                    ;10h号中断
 
 ; 进入保护模式
@@ -356,20 +358,60 @@ loader_start:
     mov cr0, eax
 
     jmp dword SELECTOR_CODE: p_mode_start   ;刷新流水线
+                                            ;下面是32位代码，CPU会提前将当前和后面的指令放在流水线中
+                                            ;32位代码按照16位译码会出错
+                                            ;因此无条件跳转清空流水线
 
 [bits 32]
 p_mode_start:
-    mov ax, SELECTOR_DATA
+    mov ax, SELECTOR_DATA           ;初始化各段寄存器
     mov ds, ax
     mov es, ax
     mov ss, ax
-    mov esp; LOADER_STACK_TOP
+    mov esp, LOADER_STACK_TOP
     mov ax, SELECTOR_VIDEO
     mov gs, ax
 
-    mov byte [gs:160], 'P'
+    mov byte [gs:160], 'P'          ;往显存第80个字符位置写入'P'，保护模式写入
 
     jmp $
 ```
 
-......
+编译`loader.S`
+
+```shell
+nasm -I include/ -o loader.bin loader.S
+```
+
+此时`loader.bin` 618 个字节，将loader写入硬盘
+
+```shell
+dd if=./loader.bin of=./hd60M.img bs=1024 count=1 seek=2 conv=notrunc
+```
+
+修改`mbr.S`的读入扇区数，由1改为4
+
+```S
+    ...
+    mov cx,4
+    call rd_disk_m_16
+    ...
+```
+
+编译`mbr.S`：
+
+```shell
+nasm -I include/ -o mbr.bin mbr.S
+```
+
+将`mbr.bin`写入硬盘的0盘0道1扇区
+
+```shell
+dd if=./mbr.bin of=./hd60M.img bs=512 count=1 conv=notrunc
+```
+
+启动bochs
+
+```shell
+./bin/bochs -f bochsrc.disk
+```
