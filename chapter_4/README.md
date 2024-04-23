@@ -415,3 +415,5 @@ dd if=./mbr.bin of=./hd60M.img bs=512 count=1 conv=notrunc
 ```shell
 ./bin/bochs -f bochsrc.disk
 ```
+
+？？？？输出了“2 LOADER”，好像哪里搞错了
