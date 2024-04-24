@@ -973,8 +973,7 @@ nasm -I include/ -o loader.bin loader.S
 将loader写入硬盘
 
 ```shell
-dd if=./loader.bin of=./hd60M.img bs=512 count=1 seek=2 conv=notrunc
+dd if=./loader.bin of=./hd60M.img bs=512 count=4 seek=2 conv=notrunc
 ```
 
 执行bochs查看结果
-

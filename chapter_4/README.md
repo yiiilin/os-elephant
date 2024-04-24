@@ -256,7 +256,7 @@ DESC_L equ 0_0_0000_0000_0000_0000_0000b        ;64位代码标记，标记为0
 DESC_AVL equ 0_0000_0000_0000_0000_0000b        ;留给操作系统用的，没有实际意义
 DESC_LIMIT_CODE2 equ 1111_0000_0000_0000_0000b  ;代码段段界限的第2部分
 DESC_LIMIT_DATA2 equ DESC_LIMIT_CODE2           ;数据段段界限的第2部分
-DESC_LIMIT_VIDEO2 equ 0000_0000_0000_0000_0000b ;？？？
+DESC_LIMIT_VIDEO2 equ 0000_0000_0000_0000_0000b ;显示段段界限的第2部分
 DESC_P equ 1000_0000_0000_0000b                 ;表示段存在
 DESC_DPL_0 equ 00_0_0000_0000_0000b             ;表示该断描述符对应的内存段特权级为0
 DESC_DPL_1 equ 01_0_0000_0000_0000b             ;表示该断描述符对应的内存段特权级为1
@@ -278,7 +278,7 @@ DESC_DATA_HIGH4 equ (0x00 << 24) + DESC_G_4K + DESC_D_32 + \
 DESC_VIDEO_HIGH4 equ (0x00 << 24) + DESC_G_4K + DESC_D_32 + \
     DESC_L + DESC_AVL+ DESC_LIMIT_VIDEO2 + \
     DESC_P + DESC_DPL_0 + DESC_S_DATA + \
-    DESC_TYPE_DATA + 0x00                       ;？？？
+    DESC_TYPE_DATA + 0x0b                       ;定义了显示段的高4字节，(0x00<<24)表示“段基址24-31”字段，0x0b是段基址16-23位，文本模式的起始地址为0xb8000，因此段基址设置0xb8000
 
 ; 选择子属性
 RPL0 equ 00b
@@ -287,7 +287,6 @@ RPL2 equ 10b
 RPL3 equ 11b
 TI_GDT equ 000b
 TI_LDT equ 100b
-
 ```
 
 `equ`是使用宏赋值
@@ -372,7 +371,7 @@ p_mode_start:
     mov ax, SELECTOR_VIDEO
     mov gs, ax
 
-    mov byte [gs:160], 'P'          ;往显存第80个字符位置写入'P'，保护模式写入
+    mov byte [gs:160], 'P'          ;往显存第80个字符位置写入'P'，第二行第一个字符，保护模式写入
 
     jmp $
 ```
@@ -383,10 +382,10 @@ p_mode_start:
 nasm -I include/ -o loader.bin loader.S
 ```
 
-此时`loader.bin` 618 个字节，将loader写入硬盘
+此时`loader.bin` 618 个字节，将loader写入硬盘，读取4个块
 
 ```shell
-dd if=./loader.bin of=./hd60M.img bs=1024 count=1 seek=2 conv=notrunc
+dd if=./loader.bin of=./hd60M.img bs=512 count=4 seek=2 conv=notrunc
 ```
 
 修改`mbr.S`的读入扇区数，由1改为4
@@ -416,4 +415,4 @@ dd if=./mbr.bin of=./hd60M.img bs=512 count=1 conv=notrunc
 ./bin/bochs -f bochsrc.disk
 ```
 
-？？？？输出了“2 LOADER”，好像哪里搞错了
+![loader](pic/loader.png)
