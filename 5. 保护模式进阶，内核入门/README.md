@@ -92,3 +92,52 @@ BIOS中断`0x15`子功能`0xE820`能够获取系统的内存布局，每次调�
 1. 将`AX`寄存器写入`0x88`
 2. 执行中断`int 0x15`
 3. 在`CF`位为0时，返回后输出对应的寄存器便会有对应的结果
+
+### 实战内存容量检测
+
+尝试上述三种内存检测方式，`loader.S`:
+
+```S
+%include "boot.inc"
+section loader vstart=LOADER_BASE_ADDR
+LOADER_STACK_TOP equ LOADER_BASE_ADDR      ;保护模式下loader的栈
+jmp loader_start                           ;也可以在MBR直接跳到loader_start的位置，该jmp就可以不要了
+
+;构建gdt及其内部描述符
+GDT_BASE:   dd 0x0000_0000                  ;dd是double-word，双字，4字节，
+            dd 0x0000_0000                  ;地址越来越高，第一个段描述符不可用，因此用0填充
+CODE_DESC:  dd 0x0000_FFFF                                      ;代码段描述符，低4字节，FFFF是段界限，0000是段基址
+            dd DESC_CODE_HIGH4                                  ;             高4字节
+DATA_STACK_DESC:    dd 0x0000_FFFF                              ;数据段和栈段描述符
+                    dd DESC_DATA_HIGH4
+VIDEO_DESC: dd 0x8000_0007  ;段基址0x8000，颗粒度为4K，limit=(0xbffff-0xb8000)/4k=0x7，因此段界限位0x0007
+                            ;显示段描述符，0xb8000~0xbffff是用于文本模式显示适配器的内存地址
+                            ;内存地址0xc0000显示适配器BIOS所在区域
+            dd DESC_VIDEO_HIGH4 ;此时dpl（特权级）为0
+GDT_SIZE equ $ - GDT_BASE
+GDT_LIMIT equ GDT_SIZE - 1  ;GDT段界限
+times 60 dq 0   ;预留60个描述符的空位，预留的60个段描述符位置，60*8字节
+
+; total_mem_bytes 用于保存内存容量，以字节为单位，此位置比较好记
+; 当前偏移loader.bin文件头0x200字节
+; loader.bin的加载地址是0x900
+; 故total_mem_bytes内存中的地址为0xb00
+; 将来在内核中会引用此地址
+total_mem_bytes dd 0
+
+
+;gdt的指针，前两字节是gdt界限，后四个字节是gdt起始地址，lgdt命令用的
+gdt_ptr dw GDT_LIMIT
+        dd GDT_BASE
+
+;人工对齐：total_mem_bytes4+gdt_ptr6+ards_buf244+ards_nr2，共256字节
+ards_buf times 244 db 0
+ards_nr dw 0  ;用于记录ARDS结构体数量
+
+loader_start:
+    ; int 15h eax = 0000E820h, edx = 534D4150h ('SMAP') 获取内存布局
+    xor ebx, ebx            ; 第一次调用，ebx值要为0
+    mov edx, 0x534d4150     ; edx只赋值一次，循环体中不会改变
+    mov di, ards_buf        ; ards结构缓冲区
+未完待续。。。
+```
