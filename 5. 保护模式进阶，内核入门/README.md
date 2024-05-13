@@ -136,8 +136,41 @@ ards_nr dw 0  ;用于记录ARDS结构体数量
 
 loader_start:
     ; int 15h eax = 0000E820h, edx = 534D4150h ('SMAP') 获取内存布局
-    xor ebx, ebx            ; 第一次调用，ebx值要为0
+    xor ebx, ebx            ; 第一次调用，ebx值要为0，第一个ards
     mov edx, 0x534d4150     ; edx只赋值一次，循环体中不会改变
-    mov di, ards_buf        ; ards结构缓冲区
+    mov di, ards_buf        ; ards结构缓冲区，ards要被写入的地方，es: di
+
+.e820_mem_get_loop:         ; 循环获取每个ards内存范围描述结构
+    mov eax, 0x0000e820     ; 执行 int 0x15后，eax值变成0x534d4150，所以每次执行int前，都要更新为子功能号
+    mov ecx, 20             ; ADRS 结构大小为20字节
+    int 0x15
+    jc .e820_failed_so_try_e801 ;若cf位为1，则有错误发生，尝试0xe801
+                            ; 此时cf位为0
+    add di, cx              ; 增加20字节，下一个ADRS的位置
+    inc word [ards_nr]      ; 记录ARDS数量，加一
+    cmp ebx, 0              ; 若ebx为0，且cf为0，说明ards已经全部返回
+                            ; 当前已是最后一个
+                            ; CMP 的说明 https://stackoverflow.com/questions/45898438/understanding-cmp-instruction
+                            ; cmp ax bx , same to sub ax bx, but not save result to ax
+                            ; ax > bx, zf=0, cf=0
+                            ; ax < bx, zf=0, cf=1
+                            ; ax = bx, zf=1, cf=0
+                            ; ZF CF的说明 https://www.ic.unicamp.br/~celio/mc404-2006/flags.html
+                            ; JNZ的说明 https://www.philadelphia.edu.jo/academics/qhamarsheh/uploads/Lecture%2018%20Conditional%20Jumps%20Instructions.pdf
+    jnz .e820_mem_get_loop  ; 如果 cf != 0，则跳转，也就是ebx不为0的时候，没有结束，再次读取内存
+
+    ; 在所有ards结构中
+    ; 找出(base_add_low + length_low)的最大值，即内存的容量
+    ; (base_add_low + length_low)，见表5-1
+    mov cx, [ards_nr]
+    ; 遍历每一个ARGS结构体，循环次数为ards的个数
+    mov ebx, ards_buf
+    xor edx, edx            ; edx为最大内存容量，先清零
+.find_max_mem_area:
+    ; 无需判断type是否为1，最大的内存块一定是可被使用的
+    move eax, [ebx]         ; base_add_low
+    add eax, [ebx+8]        ; length_low
+    add ebx, 20             ; 下一块ards结构的地址
+    cmp edx, eax            ; 和现存最大内存容量相比，哪个大
 未完待续。。。
 ```
