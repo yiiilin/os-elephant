@@ -101,7 +101,6 @@ BIOS中断`0x15`子功能`0xE820`能够获取系统的内存布局，每次调�
 %include "boot.inc"
 section loader vstart=LOADER_BASE_ADDR
 LOADER_STACK_TOP equ LOADER_BASE_ADDR      ;保护模式下loader的栈
-jmp loader_start                           ;也可以在MBR直接跳到loader_start的位置，该jmp就可以不要了
 
 ;构建gdt及其内部描述符
 GDT_BASE:   dd 0x0000_0000                  ;dd是double-word，双字，4字节，
@@ -114,9 +113,15 @@ VIDEO_DESC: dd 0x8000_0007  ;段基址0x8000，颗粒度为4K，limit=(0xbffff-0
                             ;显示段描述符，0xb8000~0xbffff是用于文本模式显示适配器的内存地址
                             ;内存地址0xc0000显示适配器BIOS所在区域
             dd DESC_VIDEO_HIGH4 ;此时dpl（特权级）为0
-GDT_SIZE equ $ - GDT_BASE
+GDT_SIZE equ $ - GDT_BASE       ; equ，宏定义，不占位置
 GDT_LIMIT equ GDT_SIZE - 1  ;GDT段界限
 times 60 dq 0   ;预留60个描述符的空位，预留的60个段描述符位置，60*8字节
+                ;(4+60)*8=512=0x200字节
+                ;程序加载地址为0x900，0x900+0x200=0xb00，所以0xb00是total_mem_bytes的内存地址
+
+SELECTOR_CODE equ (0x0001<<3) + TI_GDT + RPL0 ;相当于(CODE_DESC - GDT_BASE)/8 + TI_GDT + RPL0，代码段选择子
+SELECTOR_DATA equ (0x0002<<3) + TI_GDT + RPL0 ;相当于(DATA_STACK_DESC - GDT_BASE)/8 + TI_GDT + RPL0，数据段选择子，栈段选择子
+SELECTOR_VIDEO equ (0x0003<<3) + TI_GDT + RPL0 ;相当于(VIDEO_DESC - GDT_BASE)/8 + TI_GDT + RPL0，显示段选择子
 
 ; total_mem_bytes 用于保存内存容量，以字节为单位，此位置比较好记
 ; 当前偏移loader.bin文件头0x200字节
@@ -125,13 +130,13 @@ times 60 dq 0   ;预留60个描述符的空位，预留的60个段描述符位�
 ; 将来在内核中会引用此地址
 total_mem_bytes dd 0
 
-
 ;gdt的指针，前两字节是gdt界限，后四个字节是gdt起始地址，lgdt命令用的
 gdt_ptr dw GDT_LIMIT
         dd GDT_BASE
 
-;人工对齐：total_mem_bytes4+gdt_ptr6+ards_buf244+ards_nr2，共256字节
-ards_buf times 244 db 0
+;人工对齐：total_mem_bytes4+gdt_ptr6+ards_buf244+ards_nr2，共256字节，2^8=0x100
+ards_buf times 244 db 0     ; 为什么选244字节，目的是使loader_start对齐，使其为0x300，凑个整数，没别的意思
+                            ; 所以这里MBR的跳转需要跳转到 LOADER_BASE_ADDR + 0x300
 ards_nr dw 0  ;用于记录ARDS结构体数量
 
 loader_start:
@@ -168,9 +173,127 @@ loader_start:
     xor edx, edx            ; edx为最大内存容量，先清零
 .find_max_mem_area:
     ; 无需判断type是否为1，最大的内存块一定是可被使用的
-    move eax, [ebx]         ; base_add_low
+    mov eax, [ebx]         ; base_add_low
     add eax, [ebx+8]        ; length_low
     add ebx, 20             ; 下一块ards结构的地址
     cmp edx, eax            ; 和现存最大内存容量相比，哪个大
-未完待续。。。
+    ; 遍历，找出最大，edx寄存器始终是最大内存容量
+    jge .next_ards
+    mov edx, eax            ; edx 为总内存大小
+.next_ards:
+    loop .find_max_mem_area ; 下一个ards
+    jmp .mem_get_ok
+
+
+.e820_failed_so_try_e801:
+    mov ax, 0xe801
+    int 0x15
+    jc .e801_failed_so_try88    ; e801失败就尝试0x88，cf为1时
+
+    ; 1 先算出低15MB的内存
+    ; ax和cx中是以KB为单位的内存数量，将其转换为以byte为单位
+    mov cx, 0x400           ; cx和ax值一样，cx用作乘数，2^10
+    mul cx                  ; dx, ax = mul ax, cx, https://stackoverflow.com/questions/40893026/mul-function-in-assembly
+                            ; dx为高16位，ax为低16位
+                            ; 以1KB为单位
+    shl edx, 16             ; edx = edx * 2^16, https://www.aldeid.com/wiki/X86-assembly/Instructions/shl
+                            ; edx * 2^16，是因为他是高16位
+    and eax, 0x0000FFFF     ; 取低16位
+    or edx, eax             ; 相加
+    add edx, 0x100000       ; ax只是15MB，故加1MB
+    mov esi, edx            ; 先把低15MB的内存容量存入esi寄存器备份
+
+    ; 2 再将16MB以上的内存转为byte单位
+    ; 寄存器bx和dx中以64KB为单位的内存数量
+    xor eax, eax            ; eax清零
+    mov ax, bx
+    mov ecx, 0x10000        ; 64KB
+    mul ecx                 ; 32位乘法，默认的被乘数是eax，积为64位
+                            ; edx, eax= mul eax, ecx
+                            ; edx 高32位
+    add esi, eax            
+    ; 此方法只能测4GB以内的内存，故32位eax足够了
+    ; edx肯定为0
+    mov edx, esi            ; edx为总内存大小
+    jmp .mem_get_ok
+
+.e801_failed_so_try88:
+    mov ah, 0x88
+    int 0x15
+    jc .error_hlt
+    and eax, 0x0000FFFF
+
+    mov cx, 0x400
+    mul cx                  ; ax的内存容量以byte为单位
+    shl edx, 16             ; 把dx移到高16位
+    or edx, eax             ; 把积的低16位组合到edx, 为32位的积
+    add edx, 0x100000       ; 0x88只返回1MB以上的内存，所以加1MB
+    
+error_hlt:
+    jmp $
+
+.mem_get_ok:
+    mov [total_mem_bytes], edx  ;将内存转为byte单位后存入total_mem_bytes处
+
+
+; 重复的
+; 进入保护模式
+;1 打开A20
+;2 加载GDT
+;3 将cr0的pe位置1
+
+    ; 打开A20
+    in al, 0x92
+    or al, 0000_0010B
+    out 0x92, al
+
+    ; 加载GDT
+    lgdt [gdt_ptr]
+
+    ; 将cr0的pe位置1
+    mov eax, cr0
+    or eax, 0x0000_0001
+    mov cr0, eax
+
+    jmp dword SELECTOR_CODE: p_mode_start   ;刷新流水线
+                                            ;下面是32位代码，CPU会提前将当前和后面的指令放在流水线中
+                                            ;32位代码按照16位译码会出错
+                                            ;因此无条件跳转清空流水线
+
+[bits 32]
+p_mode_start:
+    mov ax, SELECTOR_DATA           ;初始化各段寄存器
+    mov ds, ax
+    mov es, ax
+    mov ss, ax
+    mov esp, LOADER_STACK_TOP
+    mov ax, SELECTOR_VIDEO
+    mov gs, ax
+
+    mov byte [gs:160], 'P'          ;往显存第80个字符位置写入'P'，保护模式写入
+
+    jmp $
 ```
+
+需要将MBR的`jmp`指令修改为
+
+```S
+jmp LOADER_BASE_ADDR + 0x300
+```
+
+因为`loader_start`之前有`0x300`大小的数据定义
+
+目前还没打印出`total_mem_bytes`
+
+所以用bochs调试查看，此时可以查看boch的配置`bochsrc.disk`，`megs: 32`为32MB
+
+编译
+
+```shell
+nasm -I include/ -o mbr.bin mbr.S
+nasm -I include/ -o loader.bin loader.S
+dd if=./mbr.bin of=./hd60M.img bs=512 count=1 conv=notrunc
+dd if=./loader.bin of=./hd60M.img bs=512 count=4 seek=2 conv=notrunc
+```
+
+![内存容量](pic/内存容量.png)
