@@ -297,3 +297,5 @@ dd if=./loader.bin of=./hd60M.img bs=512 count=4 seek=2 conv=notrunc
 ```
 
 ![内存容量](pic/内存容量.png)
+
+结果为`0x0200_0000`，即`2^25`=`32MB`
