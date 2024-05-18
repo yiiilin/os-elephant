@@ -84,3 +84,7 @@ echo "ata0-master: type=disk, path="hd60M.img", mode=flat, cylinders=121, heads=
 # 随后启动bochs
 bochs -f bochsrc.disk
 ```
+
+## x86汇编
+
+[x86汇编指令参考](https://shell-storm.org/x86doc/)
