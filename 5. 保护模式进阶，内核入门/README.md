@@ -407,7 +407,7 @@ CPU开分页，段组件输出的线性地址，是虚拟地址，需要在页�
 
 任意一个32位物理地址，必然在某个页表内的某个物理页中
 
-定位一个物理页，首先要找到其所属页表，页目录中1024个页表，所以用10位表示，所以虚拟地址的高10位用来定位一个页表，虚拟地址的中间10位，定位具体的物理页，剩余12位可以表达4KB之内的任意地址，作为页内偏移量
+**定位一个物理页，首先要找到其所属页表，页目录中1024个页表，所以用10位表示，所以虚拟地址的高10位用来定位一个页表，虚拟地址的中间10位，定位具体的物理页，剩余12位可以表达4KB之内的任意地址，作为页内偏移量**
 
 页目录项和页表项都是4字节，所以每项里的物理地址为：索引值*4+页表起始地址，页目录项和页表项都需要上述计算
 
@@ -438,11 +438,11 @@ CPU开分页，段组件输出的线性地址，是虚拟地址，需要在页�
 9. G：全局位，为1表示这是全局页，如果是全局页，该页将在高速缓存`TLB`（Translation Lookaside Buffer）中一直保存，给出虚拟地址可以直接获取物理地址，无需转换，`TLB`空间小，只存放高频页面。清空`TLB`的方式有两种：用`invlpg`指令清空单独虚拟地址条目、重新加载`cr3`寄存器，将清空`TLB`
 10. AVL，可用位，3位，操作系统可用该位
 
-启用分页机制，需要三步：
+**启用分页机制，需要三步**：
 
 1. 准备好页目录表及页表
 2. 将页表地址写入控制寄存器`cr3`
-3. 寄存器`cr0`的`PG`位置1
+3. 寄存器`cr0`的`PG`位置1（第31位）
 
 `cr3`控制寄存器用于存储页表物理地址，所以又称页目录机制寄存器
 
@@ -474,4 +474,342 @@ CPU开分页，段组件输出的线性地址，是虚拟地址，需要在页�
 
 ![页表地址](pic/页表地址.png)
 
-未完待续。。。
+分页步骤也就是：
+
+1. 创建页目录表
+2. 创建页表
+3. 初始化页目录表与页表数据
+4. 将全局描述符中的视频段描述符存放于内核所在虚拟地址（4GB中的高1GB地址）
+5. 将栈地址同样映射到内核所在虚拟地址
+6. 页目录地址赋值给`cr3`
+7. 打开`cr0`的`pg`位，开启分页
+8. 重新加载`gdt`
+9. 使用新显存地址打印字符
+
+代码：
+
+boot.inc，**新增页目录表物理地址声明和页表属性声明**
+
+```S
+; loader和kernel
+LOADER_BASE_ADDR equ 0x900
+LOADER_START_SECTOR equ 0x2
+
+; 页目录表物理地址
+PAGE_DIR_TABLE_POS equ 0x100000
+
+; gdt描述符
+DESC_G_4K equ 1_000_0000_0000_0000_0000_0000b   ;段描述符的G位，为4K粒度
+DESC_D_32 equ 1_00_0000_0000_0000_0000_0000b    ;D/B位，表示32位操作数
+DESC_L equ 0_0_0000_0000_0000_0000_0000b        ;64位代码标记，标记为0
+DESC_AVL equ 0_0000_0000_0000_0000_0000b        ;留给操作系统用的，没有实际意义
+DESC_LIMIT_CODE2 equ 1111_0000_0000_0000_0000b  ;代码段段界限的第2部分
+DESC_LIMIT_DATA2 equ DESC_LIMIT_CODE2           ;数据段段界限的第2部分
+DESC_LIMIT_VIDEO2 equ 0000_0000_0000_0000_0000b ;显示段段界限的第2部分
+DESC_P equ 1000_0000_0000_0000b                 ;表示段存在
+DESC_DPL_0 equ 00_0_0000_0000_0000b             ;表示该断描述符对应的内存段特权级为0
+DESC_DPL_1 equ 01_0_0000_0000_0000b             ;表示该断描述符对应的内存段特权级为1
+DESC_DPL_2 equ 10_0_0000_0000_0000b             ;表示该断描述符对应的内存段特权级为2
+DESC_DPL_3 equ 11_0_0000_0000_0000b             ;表示该断描述符对应的内存段特权级为3
+DESC_S_CODE equ 1_0000_0000_0000b               ;代码段的S段，为1表示为普通段，不是系统段
+DESC_S_DATA equ DESC_S_CODE                     ;数据段的S段，为1表示为普通段，不是系统段
+DESC_S_SYS equ 0_0000_0000_0000b                ;表示该段为系统段
+DESC_TYPE_CODE equ 1000_0000_0000b              ;x=1,c=0,r=0,a=0 代码段可执行，非一致性，不可读，已访问位清零
+DESC_TYPE_DATA equ 0010_0000_0000b              ;x=1,e=0,w=1,a=0 数据段不可执行，向上扩展，可写，已访问位清零
+DESC_CODE_HIGH4 equ (0x00 << 24) + DESC_G_4K + DESC_D_32 + \
+    DESC_L + DESC_AVL+ DESC_LIMIT_CODE2 + \
+    DESC_P + DESC_DPL_0 + DESC_S_CODE + \
+    DESC_TYPE_CODE + 0x00                       ;定义了代码段的高4字节，(0x00<<24)表示“段基址24-31”字段
+DESC_DATA_HIGH4 equ (0x00 << 24) + DESC_G_4K + DESC_D_32 + \
+    DESC_L + DESC_AVL+ DESC_LIMIT_DATA2 + \
+    DESC_P + DESC_DPL_0 + DESC_S_DATA + \
+    DESC_TYPE_DATA + 0x00                       ;定义了数据段的高4字节，(0x00<<24)表示“段基址24-31”字段
+DESC_VIDEO_HIGH4 equ (0x00 << 24) + DESC_G_4K + DESC_D_32 + \
+    DESC_L + DESC_AVL+ DESC_LIMIT_VIDEO2 + \
+    DESC_P + DESC_DPL_0 + DESC_S_DATA + \
+    DESC_TYPE_DATA + 0x0b                       ;定义了显示段的高4字节，(0x00<<24)表示“段基址24-31”字段，0x0b是段基址16-23位，文本模式的起始地址为0xb8000，因此段基址设置0xb8000
+
+; 选择子属性
+RPL0 equ 00b
+RPL1 equ 01b
+RPL2 equ 10b
+RPL3 equ 11b
+TI_GDT equ 000b
+TI_LDT equ 100b
+
+; 页表相关属性
+PG_P equ 1b
+PG_RW_R equ 00b
+PG_RW_W equ 10b
+PG_US_S equ 000b
+PG_US_U equ 100b
+```
+
+loader.S，新增页表初始化过程以及分页开启
+
+```S
+%include "boot.inc"
+section loader vstart=LOADER_BASE_ADDR
+LOADER_STACK_TOP equ LOADER_BASE_ADDR      ;保护模式下loader的栈
+                           ;也可以在MBR直接跳到loader_start的位置，该jmp就可以不要了
+
+;构建gdt及其内部描述符
+GDT_BASE:   dd 0x0000_0000                  ;dd是double-word，双字，4字节，
+            dd 0x0000_0000                  ;地址越来越高，第一个段描述符不可用，因此用0填充
+CODE_DESC:  dd 0x0000_FFFF                                      ;代码段描述符，低4字节，FFFF是段界限，0000是段基址
+            dd DESC_CODE_HIGH4                                  ;             高4字节
+DATA_STACK_DESC:    dd 0x0000_FFFF                              ;数据段和栈段描述符
+                    dd DESC_DATA_HIGH4
+VIDEO_DESC: dd 0x8000_0007  ;段基址0x8000，颗粒度为4K，limit=(0xbffff-0xb8000)/4k=0x7，因此段界限位0x0007
+                            ;显示段描述符，0xb8000~0xbffff是用于文本模式显示适配器的内存地址
+                            ;内存地址0xc0000显示适配器BIOS所在区域
+            dd DESC_VIDEO_HIGH4 ;此时dpl（特权级）为0
+GDT_SIZE equ $ - GDT_BASE       ; equ，宏定义，不占位置
+GDT_LIMIT equ GDT_SIZE - 1  ;GDT段界限
+times 60 dq 0   ;预留60个描述符的空位，预留的60个段描述符位置，60*8字节
+                ;(4+60)*8=512=0x200字节
+                ;程序加载地址为0x900，0x900+0x200=0xb00，所以0xb00是total_mem_bytes的内存地址
+
+
+SELECTOR_CODE equ (0x0001<<3) + TI_GDT + RPL0 ;相当于(CODE_DESC - GDT_BASE)/8 + TI_GDT + RPL0，代码段选择子
+SELECTOR_DATA equ (0x0002<<3) + TI_GDT + RPL0 ;相当于(DATA_STACK_DESC - GDT_BASE)/8 + TI_GDT + RPL0，数据段选择子，栈段选择子
+SELECTOR_VIDEO equ (0x0003<<3) + TI_GDT + RPL0 ;相当于(VIDEO_DESC - GDT_BASE)/8 + TI_GDT + RPL0，显示段选择子
+
+; total_mem_bytes 用于保存内存容量，以字节为单位，此位置比较好记
+; 当前偏移loader.bin文件头0x200字节
+; loader.bin的加载地址是0x900
+; 故total_mem_bytes内存中的地址为0xb00
+; 将来在内核中会引用此地址
+total_mem_bytes dd 0
+
+
+;gdt的指针，前两字节是gdt界限，后四个字节是gdt起始地址，lgdt命令用的
+gdt_ptr dw GDT_LIMIT
+        dd GDT_BASE
+
+;人工对齐：total_mem_bytes4+gdt_ptr6+ards_buf244+ards_nr2，共256字节，2^8=0x100
+ards_buf times 244 db 0     ; 为什么选244字节，目的是使loader_start对齐，使其为0x300，凑个整数，没别的意思
+                            ; 所以这里MBR的跳转需要跳转到 LOADER_BASE_ADDR + 0x300
+ards_nr dw 0  ;用于记录ARDS结构体数量
+
+loader_start:
+    ; int 15h eax = 0000E820h, edx = 534D4150h ('SMAP') 获取内存布局
+    xor ebx, ebx            ; 第一次调用，ebx值要为0，第一个ards
+    mov edx, 0x534d4150     ; edx只赋值一次，循环体中不会改变
+    mov di, ards_buf        ; ards结构缓冲区，ards要被写入的地方，es: di
+
+.e820_mem_get_loop:         ; 循环获取每个ards内存范围描述结构
+    mov eax, 0x0000e820     ; 执行 int 0x15后，eax值变成0x534d4150，所以每次执行int前，都要更新为子功能号
+    mov ecx, 20             ; ADRS 结构大小为20字节
+    int 0x15
+    jc .e820_failed_so_try_e801 ;若cf位为1，则有错误发生，尝试0xe801
+                            ; 此时cf位为0
+    add di, cx              ; 增加20字节，下一个ADRS的位置
+    inc word [ards_nr]      ; 记录ARDS数量，加一
+    cmp ebx, 0              ; 若ebx为0，且cf为0，说明ards已经全部返回
+                            ; 当前已是最后一个
+                            ; CMP 的说明 https://stackoverflow.com/questions/45898438/understanding-cmp-instruction
+                            ; cmp ax bx , same to sub ax bx, but not save result to ax
+                            ; ax > bx, zf=0, cf=0
+                            ; ax < bx, zf=0, cf=1
+                            ; ax = bx, zf=1, cf=0
+                            ; ZF CF的说明 https://www.ic.unicamp.br/~celio/mc404-2006/flags.html
+                            ; JNZ的说明 https://www.philadelphia.edu.jo/academics/qhamarsheh/uploads/Lecture%2018%20Conditional%20Jumps%20Instructions.pdf
+    jnz .e820_mem_get_loop  ; 如果 cf != 0，则跳转，也就是ebx不为0的时候，没有结束，再次读取内存
+
+    ; 在所有ards结构中
+    ; 找出(base_add_low + length_low)的最大值，即内存的容量
+    ; (base_add_low + length_low)，见表5-1
+    mov cx, [ards_nr]
+    ; 遍历每一个ARGS结构体，循环次数为ards的个数
+    mov ebx, ards_buf
+    xor edx, edx            ; edx为最大内存容量，先清零
+.find_max_mem_area:
+    ; 无需判断type是否为1，最大的内存块一定是可被使用的
+    mov eax, [ebx]         ; base_add_low
+    add eax, [ebx+8]        ; length_low
+    add ebx, 20             ; 下一块ards结构的地址
+    cmp edx, eax            ; 和现存最大内存容量相比，哪个大
+    ; 遍历，找出最大，edx寄存器始终是最大内存容量
+    jge .next_ards
+    mov edx, eax            ; edx 为总内存大小
+.next_ards:
+    loop .find_max_mem_area ; 下一个ards
+    jmp .mem_get_ok
+
+
+.e820_failed_so_try_e801:
+    mov ax, 0xe801
+    int 0x15
+    jc .e801_failed_so_try88    ; e801失败就尝试0x88，cf为1时
+
+    ; 1 先算出低15MB的内存
+    ; ax和cx中是以KB为单位的内存数量，将其转换为以byte为单位
+    mov cx, 0x400           ; cx和ax值一样，cx用作乘数，2^10
+    mul cx                  ; dx, ax = mul ax, cx, https://stackoverflow.com/questions/40893026/mul-function-in-assembly
+                            ; dx为高16位，ax为低16位
+                            ; 以1KB为单位
+    shl edx, 16             ; edx = edx * 2^16, https://www.aldeid.com/wiki/X86-assembly/Instructions/shl
+                            ; edx * 2^16，是因为他是高16位
+    and eax, 0x0000FFFF     ; 取低16位
+    or edx, eax             ; 相加
+    add edx, 0x100000       ; ax只是15MB，故加1MB
+    mov esi, edx            ; 先把低15MB的内存容量存入esi寄存器备份
+
+    ; 2 再将16MB以上的内存转为byte单位
+    ; 寄存器bx和dx中以64KB为单位的内存数量
+    xor eax, eax            ; eax清零
+    mov ax, bx
+    mov ecx, 0x10000        ; 64KB
+    mul ecx                 ; 32位乘法，默认的被乘数是eax，积为64位
+                            ; edx, eax= mul eax, ecx
+                            ; edx 高32位
+    add esi, eax
+    ; 此方法只能测4GB以内的内存，故32位eax足够了
+    ; edx肯定为0
+    mov edx, esi            ; edx为总内存大小
+    jmp .mem_get_ok
+
+.e801_failed_so_try88:
+    mov ah, 0x88
+    int 0x15
+    jc .error_hlt
+    and eax, 0x0000FFFF
+
+    mov cx, 0x400
+    mul cx                  ; ax的内存容量以byte为单位
+    shl edx, 16             ; 把dx移到高16位
+    or edx, eax             ; 把积的低16位组合到edx, 为32位的积
+    add edx, 0x100000       ; 0x88只返回1MB以上的内存，所以加1MB
+
+.error_hlt:
+    jmp $
+
+.mem_get_ok:
+    mov [total_mem_bytes], edx  ;将内存转为byte单位后存入total_mem_bytes处
+
+
+; 进入保护模式
+;1 打开A20
+;2 加载GDT
+;3 将cr0的pe位置1
+
+    ; 打开A20
+    in al, 0x92
+    or al, 0000_0010B
+    out 0x92, al
+
+    ; 加载GDT
+    lgdt [gdt_ptr]
+
+    ; 将cr0的pe位置1
+    mov eax, cr0
+    or eax, 0x0000_0001
+    mov cr0, eax
+
+    jmp dword SELECTOR_CODE: p_mode_start   ;刷新流水线
+                                            ;下面是32位代码，CPU会提前将当前和后面的指令放在流水线中
+                                            ;32位代码按照16位译码会出错
+                                            ;因此无条件跳转清空流水线
+[bits 32]
+p_mode_start:
+    mov ax, SELECTOR_DATA           ;初始化各段寄存器
+    mov ds, ax
+    mov es, ax
+    mov ss, ax
+    mov esp, LOADER_STACK_TOP
+    mov ax, SELECTOR_VIDEO
+    mov gs, ax
+
+;    mov byte [gs:160], 'P'          ;往显存第80个字符位置写入'P'，保护模式写入
+;
+;    jmp $
+
+    call setup_page ; 初始化页目录表和页表
+
+    sgdt [gdt_ptr]  ; 将gdt地址读入内存，一会用新地址加载gdt
+
+    mov ebx, [gdt_ptr + 2]    ; gdt中视频段描述符地址+0xc0000000，gdt 2字节长度限制+4字节gdt地址基  址，+2就是gdt地址
+    or dword [ebx + 0x18 + 4], 0xc0000000   ; 视频段是第三个描述符，每个描述符8字节，所以加24字节， 即0x18
+                                            ; 段描述符高4字节为段基址的31~24位
+    add dword [gdt_ptr + 2], 0xc0000000     ; gdt基址加上0xc0000000，使其也成为内核所在的高地址
+    add esp, 0xc0000000                     ; 栈指针也映射到内核地址
+
+    ; 页目录地址赋给cr3
+    mov eax, PAGE_DIR_TABLE_POS
+    mov cr3, eax
+
+    ; 打开cr0的PG位，第31位
+    mov eax, cr0
+    or eax, 0x80000000
+    mov cr0, eax
+
+    ; 开启分页后，用新地址加载gdt
+    lgdt [gdt_ptr]
+
+    mov byte [gs:160], 'V'
+
+    jmp $
+
+; 创建页目录表和页表
+setup_page:
+    ; 清空页目录表内容
+    mov ecx, 4096
+    mov esi, 0
+.clear_page_dir:
+    mov byte [PAGE_DIR_TABLE_POS + esi], 0
+    inc esi
+    loop .clear_page_dir
+
+    ; 创建页目录项（PDE）
+.create_pde:
+    mov eax, PAGE_DIR_TABLE_POS
+    add eax, 0x1000 ; 第一个页表的位置，一个页表4KB=2^12
+    mov ebx, eax    ; ebx作为基址
+
+    ; 页目录项第0和第0xc00都存为第一个页表的地址，每个页表表示4MB内存
+    ; 0xc03fffff以下的4MB地址和0x003fffff以下的4MB地址都指向相同的页表，第一个页表
+    or eax, PG_US_U | PG_RW_W | PG_P    ; 页表属性：US为1，所有特权级都可访问，RW为1，可读写，P为1，存在于内存
+    mov [PAGE_DIR_TABLE_POS + 0x0], eax ; 第1个页目录项，写入地址0x101000和属性111b，每项4字节
+    mov [PAGE_DIR_TABLE_POS + 0xc00], eax   ; 第768个目录项，同样的数据，第768个页表项及以后的页表项都是内核的，0xc00=768*4
+    ; 0x0~0xbfffffff，共计3G都属于用户进程
+    ; 0xc0000000~0xffffffff，共计1G都属于内核
+    sub eax, 0x1000
+    mov [PAGE_DIR_TABLE_POS + 4092], eax    ; 最后一个页目录项指向页目录表的物理地址，每个页表4KB=4*1024=4096，最后一个页表项就是页目录表地址+4092|0x1000-4
+
+    ; 创建页表项
+    mov ecx, 256    ; 1M低端内存 / 每页大小4K = 256
+    mov esi, 0
+    mov edx, PG_US_U | PG_RW_W | PG_P
+.create_pte:
+    mov [ebx+esi*4], edx    ; ebx=0x101000，第一个页表物理地址，edx=0x00000007，第一个页表指向页目录项，第二个页表指向第一个页表地址
+    add edx, 4096           ; 4096=2^12=0x1000，也就是物理页31到12位加1，也就是下一个页表的物理地址
+    inc esi
+    loop .create_pte
+
+    mov eax, PAGE_DIR_TABLE_POS
+    add eax, 0x2000                     ; 0x102000，第二个页目录项
+    or eax, PG_US_S | PG_RW_W | PG_P
+    mov ebx, PAGE_DIR_TABLE_POS
+    mov ecx, 254            ; 第769~1022的所有目录项
+    mov esi, 769
+.create_kernel_pde:
+    mov [ebx+esi*4], eax    ; 与
+    inc esi
+    add eax, 0x1000
+    loop .create_kernel_pde
+    ret
+```
+
+编译
+
+```shell
+nasm -I include/ -o mbr.bin mbr.S
+nasm -I include/ -o loader.bin loader.S
+dd if=./mbr.bin of=./hd60M.img bs=512 count=1 conv=notrunc
+dd if=./loader.bin of=./hd60M.img bs=512 count=4 seek=2 conv=notrunc
+```
+
+运行查看结果
+
+![分页打印](./pic/分页打印.png)
