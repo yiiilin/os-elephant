@@ -813,3 +813,46 @@ dd if=./loader.bin of=./hd60M.img bs=512 count=4 seek=2 conv=notrunc
 运行查看结果
 
 ![分页打印](./pic/分页打印.png)
+
+## 加载内核
+
+### 用C语言写内核
+
+主函数文件：`c/kernel/main.c`
+
+```C
+int main(void){
+    while (1);
+    return 0;
+}
+```
+
+编译代码生成目标文件
+
+```shell
+gcc -c -o kernel/main.o kernel/main.c
+```
+
+`-c`：编译汇编到目标代码，但不链接
+
+`-o`：指定输出文件名
+
+目标文件也称为待重定位文件，重定位指文件内用的符号还未安排地址
+
+因为符号可能位于其他文件中，所以在编译时无法确定地址，在链接时统一对符号进行重新定位（编址）
+
+`file kernel/main.o`有`relocatable`属性，即可重定位属性
+
+`ld kernel/main.o -Ttext 0xc0001500 -e main -o kernel/kernel.bin`
+
+将`main.o`文件链接后生成文件`kernel.bin`
+
+`-Ttext 0xc0001500`，指定虚拟地址为`0xc0001500`
+
+`-e main`，指定程序起始地址
+
+链接阶段必须明确入口地址，因为入口地址并非`0x00`，默认把名为`_start`函数作为入口地址
+
+`gcc -o /tmp/test.bin kernel/main.c`：将文件编译、汇编、链接
+
+`nm /tmp/test.bin`，会打印执行程序的符号表，`T`属性表示符号位于代码段
