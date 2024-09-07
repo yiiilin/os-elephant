@@ -856,3 +856,49 @@ gcc -c -o kernel/main.o kernel/main.c
 `gcc -o /tmp/test.bin kernel/main.c`：将文件编译、汇编、链接
 
 `nm /tmp/test.bin`，会打印执行程序的符号表，`T`属性表示符号位于代码段
+
+### 二进制程序的运行办法
+
+程序的入口程序信息需要与程序绑定，以能够灵活找到程序入口地址、程序体大小等元数据
+
+`elf`格式就是`linux`可执行文件格式，即`Executable and Linkable Format`
+
+`windows`的可执行文件格式为`PE`，即`Portable Executable`
+
+### elf格式的二进制文件
+
+`ELF header`是个用来描述各种头的头，`elf`文件格式的核心思想是头中嵌头，是一种层次化接口
+
+`elf`的定义可以在`/usr/include/elf.h`找到
+
+`ELF header`具有固定大小，且在文件开头，描述了程序头表和节头表的大小和位置
+
+程序头表：`program header table`描述了段的大小和数量
+
+节头标：`section header table`描述了节的大小和数量
+
+`elf`文件格式布局
+
+![elf文件格式布局](./pic/elf文件格式布局.png)
+
+`elf header`结构
+
+![elfHeader](./pic/elfHeader.png)
+
+`program header`结构
+
+![programHeader](./pic/programHeader.png)
+
+### elf文件实例分析
+
+直接看可执行文件二进制数据
+
+```shell
+xxd -u -a -g 1 -s 起始字节 -l 长度 文件路径
+```
+
+直接查看`elf`解析结果
+
+```shell
+readelf -e 文件路径
+```
